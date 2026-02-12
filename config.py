@@ -47,7 +47,7 @@ VOLUME_SPIKE_THRESHOLD = 1.5  # 1.5x average volume
 
 # LLM Configuration - OpenRouter
 LLM_PROVIDER = "openrouter"
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "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")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "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")
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 # Using cost-effective model for scalping research
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.1-8b-instruct:free")  # Free tier model
