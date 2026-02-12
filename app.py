@@ -2,16 +2,18 @@
 Nifty 50 5-Minute Scalping Research Agent - Main Application
 
 Flask-based web application providing real-time scalping analysis
-powered by OpenAI GPT models.
+powered by OpenAI GPT models with PAPER TRADING and REAL-TIME MONITORING.
 """
 
-from flask import Flask, jsonify, request, render_template_string
+from flask import Flask, jsonify, request, render_template_string, Response
 from flask_cors import CORS
 import json
 import os
 from datetime import datetime
 import traceback
 import numpy as np
+import threading
+import time
 
 import config
 
@@ -34,6 +36,8 @@ from data_fetcher import NiftyDataFetcher
 from indicators import ScalpingIndicators
 from scalping_strategies import StrategyEngine
 from openai_agent import OpenAIScalpingAgent, create_openai_agent
+from realtime_agent import get_realtime_agent, get_paper_engine, RealTimeScalpingAgent
+from paper_trading import PaperTradingEngine
 
 app = Flask(__name__)
 app.json_encoder = NumpyEncoder
@@ -42,6 +46,8 @@ CORS(app)
 # Global instances
 data_fetcher = NiftyDataFetcher()
 agent = None
+realtime_agent = None
+paper_engine = None
 
 
 def get_agent():
@@ -50,6 +56,15 @@ def get_agent():
     if agent is None:
         agent = create_openai_agent()
     return agent
+
+
+def get_rt_agent() -> RealTimeScalpingAgent:
+    """Get or create the real-time agent"""
+    global realtime_agent, paper_engine
+    if realtime_agent is None:
+        paper_engine = get_paper_engine()
+        realtime_agent = get_realtime_agent()
+    return realtime_agent
 
 
 def convert_numpy(obj):
@@ -612,6 +627,546 @@ def health():
     })
 
 
+# ============================================================
+# PAPER TRADING & REAL-TIME AGENT ENDPOINTS
+# ============================================================
+
+@app.route('/api/paper/status')
+def paper_status():
+    """Get paper trading and agent status"""
+    try:
+        rt_agent = get_rt_agent()
+        status = rt_agent.get_status()
+        return jsonify(convert_numpy(status))
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/paper/start', methods=['POST'])
+def paper_start():
+    """Start the real-time scalping agent"""
+    try:
+        rt_agent = get_rt_agent()
+        data = request.json or {}
+        
+        if 'auto_trade' in data:
+            rt_agent.auto_trade = data['auto_trade']
+        if 'min_confidence' in data:
+            rt_agent.min_confidence = data['min_confidence']
+        if 'update_interval' in data:
+            rt_agent.update_interval = data['update_interval']
+        
+        rt_agent.start()
+        return jsonify({"status": "started", "message": "Real-time agent started"})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/paper/stop', methods=['POST'])
+def paper_stop():
+    """Stop the real-time scalping agent"""
+    try:
+        rt_agent = get_rt_agent()
+        rt_agent.stop()
+        return jsonify({"status": "stopped", "message": "Real-time agent stopped"})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/paper/pause', methods=['POST'])
+def paper_pause():
+    """Pause auto-trading"""
+    try:
+        rt_agent = get_rt_agent()
+        rt_agent.pause()
+        return jsonify({"status": "paused", "message": "Auto-trading paused"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/paper/resume', methods=['POST'])
+def paper_resume():
+    """Resume auto-trading"""
+    try:
+        rt_agent = get_rt_agent()
+        rt_agent.resume()
+        return jsonify({"status": "running", "message": "Auto-trading resumed"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/paper/positions')
+def paper_positions():
+    """Get open positions"""
+    try:
+        rt_agent = get_rt_agent()
+        positions = rt_agent.paper_engine.get_open_positions()
+        return jsonify({"positions": [p.to_dict() for p in positions], "count": len(positions)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/paper/statistics')
+def paper_statistics():
+    """Get paper trading statistics"""
+    try:
+        rt_agent = get_rt_agent()
+        stats = rt_agent.paper_engine.get_statistics()
+        return jsonify(convert_numpy(stats))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/paper/history')
+def paper_history():
+    """Get trade history"""
+    try:
+        rt_agent = get_rt_agent()
+        limit = request.args.get('limit', 20, type=int)
+        history = rt_agent.paper_engine.get_trade_history(limit)
+        return jsonify({"trades": history, "count": len(history)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/paper/events')
+def paper_events():
+    """Get recent trade events"""
+    try:
+        rt_agent = get_rt_agent()
+        limit = request.args.get('limit', 50, type=int)
+        events = rt_agent.get_events(limit)
+        return jsonify({"events": events, "count": len(events)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/paper/entry', methods=['POST'])
+def paper_manual_entry():
+    """Manual trade entry"""
+    try:
+        rt_agent = get_rt_agent()
+        data = request.json
+        
+        direction = data.get('direction', 'LONG').upper()
+        entry_price = data.get('entry_price')
+        stop_loss = data.get('stop_loss')
+        target = data.get('target')
+        
+        success = rt_agent.manual_entry(direction, entry_price, stop_loss, target)
+        
+        if success:
+            return jsonify({"status": "success", "message": f"Opened {direction} position"})
+        else:
+            return jsonify({"status": "error", "message": "Failed to open position"}), 400
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/paper/exit', methods=['POST'])
+def paper_manual_exit():
+    """Manual trade exit"""
+    try:
+        rt_agent = get_rt_agent()
+        data = request.json
+        
+        position_id = data.get('position_id')
+        reason = data.get('reason', 'MANUAL')
+        
+        if not position_id:
+            return jsonify({"error": "position_id required"}), 400
+        
+        success = rt_agent.manual_exit(position_id, reason)
+        
+        if success:
+            return jsonify({"status": "success", "message": "Position closed"})
+        else:
+            return jsonify({"status": "error", "message": "Failed to close position"}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/paper/close-all', methods=['POST'])
+def paper_close_all():
+    """Close all open positions"""
+    try:
+        rt_agent = get_rt_agent()
+        rt_agent.close_all_positions("MANUAL_CLOSE_ALL")
+        return jsonify({"status": "success", "message": "All positions closed"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/paper/reset', methods=['POST'])
+def paper_reset():
+    """Reset paper trading account"""
+    try:
+        rt_agent = get_rt_agent()
+        rt_agent.paper_engine.reset()
+        return jsonify({"status": "success", "message": "Paper trading account reset"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/paper/stream')
+def paper_stream():
+    """Server-Sent Events stream for real-time updates"""
+    def generate():
+        rt_agent = get_rt_agent()
+        last_event_count = 0
+        
+        while True:
+            try:
+                status = rt_agent.get_status()
+                events = rt_agent.get_events(10)
+                
+                data = {
+                    'price': status['current_price'],
+                    'state': status['state'],
+                    'positions': status['positions'],
+                    'statistics': status['statistics'],
+                    'new_events': events[last_event_count:] if len(events) > last_event_count else []
+                }
+                last_event_count = len(events)
+                
+                yield f"data: {json.dumps(convert_numpy(data))}\n\n"
+                time.sleep(2)
+            except Exception as e:
+                yield f"data: {json.dumps({'error': str(e)})}\n\n"
+                time.sleep(5)
+    
+    return Response(generate(), mimetype='text/event-stream')
+
+
+@app.route('/paper')
+def paper_dashboard():
+    """Paper Trading Dashboard"""
+    return render_template_string(PAPER_TRADING_HTML)
+
+
+PAPER_TRADING_HTML = '''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Paper Trading - Nifty 50 Scalping</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .gradient-bg { background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f172a 100%); }
+        .card { background: rgba(255,255,255,0.05); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.1); }
+        .long { color: #10b981; background: rgba(16,185,129,0.1); }
+        .short { color: #ef4444; background: rgba(239,68,68,0.1); }
+        .win { color: #10b981; }
+        .loss { color: #ef4444; }
+    </style>
+</head>
+<body class="gradient-bg min-h-screen text-white">
+    <div class="container mx-auto px-4 py-6">
+        <div class="flex flex-wrap justify-between items-center mb-6 gap-4">
+            <div>
+                <h1 class="text-2xl font-bold bg-gradient-to-r from-green-400 to-blue-500 bg-clip-text text-transparent">
+                    💰 Paper Trading Dashboard
+                </h1>
+                <p class="text-gray-400 text-sm">Real-Time Scalping Agent • ₹50,000 Virtual Capital</p>
+            </div>
+            <div class="flex items-center gap-2">
+                <span id="agentState" class="px-3 py-1 rounded-full text-sm bg-gray-700">STOPPED</span>
+                <button onclick="startAgent()" class="bg-green-600 hover:bg-green-700 px-4 py-2 rounded-lg text-sm">▶ Start</button>
+                <button onclick="stopAgent()" class="bg-red-600 hover:bg-red-700 px-4 py-2 rounded-lg text-sm">⏹ Stop</button>
+                <button onclick="pauseAgent()" class="bg-yellow-600 hover:bg-yellow-700 px-4 py-2 rounded-lg text-sm">⏸ Pause</button>
+                <a href="/" class="bg-gray-600 hover:bg-gray-700 px-4 py-2 rounded-lg text-sm">📊 Analysis</a>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-2 md:grid-cols-6 gap-3 mb-6">
+            <div class="card rounded-xl p-4 text-center">
+                <div class="text-gray-400 text-xs">Current Price</div>
+                <div id="currentPrice" class="text-xl font-bold font-mono">--</div>
+            </div>
+            <div class="card rounded-xl p-4 text-center">
+                <div class="text-gray-400 text-xs">Capital</div>
+                <div id="capital" class="text-xl font-bold font-mono">₹50,000</div>
+            </div>
+            <div class="card rounded-xl p-4 text-center">
+                <div class="text-gray-400 text-xs">Total P&L</div>
+                <div id="totalPnl" class="text-xl font-bold font-mono">₹0</div>
+            </div>
+            <div class="card rounded-xl p-4 text-center">
+                <div class="text-gray-400 text-xs">Win Rate</div>
+                <div id="winRate" class="text-xl font-bold">0%</div>
+            </div>
+            <div class="card rounded-xl p-4 text-center">
+                <div class="text-gray-400 text-xs">Total Trades</div>
+                <div id="totalTrades" class="text-xl font-bold">0</div>
+            </div>
+            <div class="card rounded-xl p-4 text-center">
+                <div class="text-gray-400 text-xs">Open Positions</div>
+                <div id="openPositions" class="text-xl font-bold">0</div>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div class="lg:col-span-2 card rounded-xl p-5">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-lg font-semibold">📈 Open Positions</h2>
+                    <button onclick="closeAllPositions()" class="text-xs bg-red-600 hover:bg-red-700 px-3 py-1 rounded">Close All</button>
+                </div>
+                <div id="positionsContainer" class="space-y-3">
+                    <div class="text-gray-500 text-center py-6">No open positions</div>
+                </div>
+            </div>
+
+            <div class="card rounded-xl p-5">
+                <h2 class="text-lg font-semibold mb-4">🎮 Manual Trade</h2>
+                <div class="space-y-3">
+                    <div>
+                        <label class="text-xs text-gray-400">Direction</label>
+                        <div class="flex gap-2 mt-1">
+                            <button onclick="setDirection('LONG')" id="btnLong" class="flex-1 py-2 rounded bg-green-600/20 border border-green-600 text-green-400">LONG</button>
+                            <button onclick="setDirection('SHORT')" id="btnShort" class="flex-1 py-2 rounded bg-gray-700 text-gray-400">SHORT</button>
+                        </div>
+                    </div>
+                    <div>
+                        <label class="text-xs text-gray-400">Entry Price (blank = market)</label>
+                        <input type="number" id="entryPrice" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 mt-1" placeholder="Market price">
+                    </div>
+                    <div>
+                        <label class="text-xs text-gray-400">Stop Loss</label>
+                        <input type="number" id="stopLoss" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 mt-1" placeholder="Auto-calculate">
+                    </div>
+                    <div>
+                        <label class="text-xs text-gray-400">Target</label>
+                        <input type="number" id="target" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 mt-1" placeholder="Auto-calculate">
+                    </div>
+                    <button onclick="placeManualTrade()" class="w-full bg-blue-600 hover:bg-blue-700 py-3 rounded-lg font-semibold">Place Trade</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
+            <div class="card rounded-xl p-5">
+                <h2 class="text-lg font-semibold mb-4">📡 Live Events</h2>
+                <div id="eventsContainer" class="space-y-2 max-h-80 overflow-y-auto">
+                    <div class="text-gray-500 text-center py-4">Waiting for events...</div>
+                </div>
+            </div>
+
+            <div class="card rounded-xl p-5">
+                <h2 class="text-lg font-semibold mb-4">📜 Trade History</h2>
+                <div id="historyContainer" class="space-y-2 max-h-80 overflow-y-auto">
+                    <div class="text-gray-500 text-center py-4">No trades yet</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="mt-6 text-center">
+            <button onclick="resetAccount()" class="text-sm text-gray-500 hover:text-red-400">🔄 Reset Paper Trading Account</button>
+        </div>
+    </div>
+
+    <script>
+        let currentDirection = 'LONG';
+        let eventSource = null;
+
+        function setDirection(dir) {
+            currentDirection = dir;
+            document.getElementById('btnLong').className = dir === 'LONG' 
+                ? 'flex-1 py-2 rounded bg-green-600/20 border border-green-600 text-green-400'
+                : 'flex-1 py-2 rounded bg-gray-700 text-gray-400';
+            document.getElementById('btnShort').className = dir === 'SHORT'
+                ? 'flex-1 py-2 rounded bg-red-600/20 border border-red-600 text-red-400'
+                : 'flex-1 py-2 rounded bg-gray-700 text-gray-400';
+        }
+
+        async function startAgent() {
+            await fetch('/api/paper/start', { method: 'POST' });
+            refreshStatus();
+            startEventStream();
+        }
+
+        async function stopAgent() {
+            await fetch('/api/paper/stop', { method: 'POST' });
+            refreshStatus();
+            if (eventSource) eventSource.close();
+        }
+
+        async function pauseAgent() {
+            await fetch('/api/paper/pause', { method: 'POST' });
+            refreshStatus();
+        }
+
+        async function closeAllPositions() {
+            if (confirm('Close all open positions?')) {
+                await fetch('/api/paper/close-all', { method: 'POST' });
+                refreshStatus();
+            }
+        }
+
+        async function resetAccount() {
+            if (confirm('Reset paper trading account? All history will be lost.')) {
+                await fetch('/api/paper/reset', { method: 'POST' });
+                refreshStatus();
+            }
+        }
+
+        async function placeManualTrade() {
+            const data = {
+                direction: currentDirection,
+                entry_price: document.getElementById('entryPrice').value || null,
+                stop_loss: document.getElementById('stopLoss').value || null,
+                target: document.getElementById('target').value || null
+            };
+            const res = await fetch('/api/paper/entry', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            });
+            const result = await res.json();
+            alert(result.message || result.error);
+            refreshStatus();
+        }
+
+        async function closePosition(id) {
+            await fetch('/api/paper/exit', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ position_id: id })
+            });
+            refreshStatus();
+        }
+
+        async function refreshStatus() {
+            try {
+                const res = await fetch('/api/paper/status');
+                const data = await res.json();
+                
+                const stateEl = document.getElementById('agentState');
+                stateEl.textContent = data.state;
+                stateEl.className = `px-3 py-1 rounded-full text-sm ${
+                    data.state === 'RUNNING' ? 'bg-green-600' : 
+                    data.state === 'PAUSED' ? 'bg-yellow-600' : 'bg-gray-700'
+                }`;
+                
+                document.getElementById('currentPrice').textContent = data.current_price?.toFixed(2) || '--';
+                
+                const stats = data.statistics || {};
+                document.getElementById('capital').textContent = `₹${(stats.current_capital || 50000).toLocaleString()}`;
+                
+                const pnl = stats.total_pnl || 0;
+                const pnlEl = document.getElementById('totalPnl');
+                pnlEl.textContent = `₹${pnl >= 0 ? '+' : ''}${pnl.toLocaleString()}`;
+                pnlEl.className = `text-xl font-bold font-mono ${pnl >= 0 ? 'win' : 'loss'}`;
+                
+                document.getElementById('winRate').textContent = `${stats.win_rate || 0}%`;
+                document.getElementById('totalTrades').textContent = stats.total_trades || 0;
+                document.getElementById('openPositions').textContent = stats.open_positions || 0;
+                
+                updatePositions(data.positions || []);
+                if (data.recent_events) updateEvents(data.recent_events);
+            } catch (e) { console.error('Status refresh error:', e); }
+        }
+
+        function updatePositions(positions) {
+            const container = document.getElementById('positionsContainer');
+            if (!positions.length) {
+                container.innerHTML = '<div class="text-gray-500 text-center py-6">No open positions</div>';
+                return;
+            }
+            container.innerHTML = positions.map(p => `
+                <div class="p-4 rounded-lg ${p.side === 'LONG' ? 'long' : 'short'}">
+                    <div class="flex justify-between items-start">
+                        <div><span class="font-bold">${p.side}</span><span class="text-xs ml-2 text-gray-400">${p.strategy}</span></div>
+                        <button onclick="closePosition('${p.id}')" class="text-xs bg-red-600 hover:bg-red-700 px-2 py-1 rounded">Exit</button>
+                    </div>
+                    <div class="grid grid-cols-4 gap-2 mt-2 text-sm">
+                        <div><span class="text-gray-400">Entry:</span> ${p.entry_price?.toFixed(2)}</div>
+                        <div><span class="text-gray-400">Current:</span> ${p.current_price?.toFixed(2)}</div>
+                        <div><span class="text-gray-400">SL:</span> ${p.stop_loss?.toFixed(2)}</div>
+                        <div><span class="text-gray-400">Target:</span> ${p.target_1?.toFixed(2)}</div>
+                    </div>
+                    <div class="mt-2 text-lg font-bold ${p.unrealized_pnl >= 0 ? 'win' : 'loss'}">
+                        P&L: ₹${p.unrealized_pnl >= 0 ? '+' : ''}${p.unrealized_pnl?.toFixed(2)}
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function updateEvents(events) {
+            const container = document.getElementById('eventsContainer');
+            if (!events.length) {
+                container.innerHTML = '<div class="text-gray-500 text-center py-4">Waiting for events...</div>';
+                return;
+            }
+            container.innerHTML = events.reverse().map(e => {
+                const time = new Date(e.timestamp).toLocaleTimeString();
+                const icon = e.event_type === 'ENTRY' ? '🟢' : e.event_type === 'EXIT' ? '🔴' : e.event_type === 'SIGNAL' ? '📡' : '📊';
+                return `<div class="p-2 bg-gray-800/50 rounded text-sm">
+                    <span class="text-gray-500">${time}</span>
+                    <span class="ml-2">${icon} ${e.event_type}</span>
+                    ${e.side ? `<span class="ml-2 ${e.side === 'LONG' ? 'text-green-400' : 'text-red-400'}">${e.side}</span>` : ''}
+                    <span class="ml-2">@ ${e.price?.toFixed(2)}</span>
+                </div>`;
+            }).join('');
+        }
+
+        async function loadHistory() {
+            try {
+                const res = await fetch('/api/paper/history?limit=20');
+                const data = await res.json();
+                const container = document.getElementById('historyContainer');
+                if (!data.trades?.length) {
+                    container.innerHTML = '<div class="text-gray-500 text-center py-4">No trades yet</div>';
+                    return;
+                }
+                container.innerHTML = data.trades.reverse().map(t => `
+                    <div class="p-3 bg-gray-800/50 rounded text-sm">
+                        <div class="flex justify-between">
+                            <span class="${t.side === 'LONG' ? 'text-green-400' : 'text-red-400'}">${t.side}</span>
+                            <span class="${t.result === 'WIN' ? 'win' : 'loss'}">₹${t.pnl >= 0 ? '+' : ''}${t.pnl?.toFixed(2)}</span>
+                        </div>
+                        <div class="text-xs text-gray-500 mt-1">${t.strategy} • ${t.exit_reason} • ${t.duration_minutes?.toFixed(0)}min</div>
+                    </div>
+                `).join('');
+            } catch (e) { console.error('History load error:', e); }
+        }
+
+        function startEventStream() {
+            if (eventSource) eventSource.close();
+            eventSource = new EventSource('/api/paper/stream');
+            eventSource.onmessage = (e) => {
+                try {
+                    const data = JSON.parse(e.data);
+                    if (data.price) document.getElementById('currentPrice').textContent = data.price.toFixed(2);
+                    if (data.positions) updatePositions(data.positions);
+                    if (data.statistics) {
+                        const stats = data.statistics;
+                        document.getElementById('capital').textContent = `₹${(stats.current_capital || 50000).toLocaleString()}`;
+                        const pnl = stats.total_pnl || 0;
+                        const pnlEl = document.getElementById('totalPnl');
+                        pnlEl.textContent = `₹${pnl >= 0 ? '+' : ''}${pnl.toLocaleString()}`;
+                        pnlEl.className = `text-xl font-bold font-mono ${pnl >= 0 ? 'win' : 'loss'}`;
+                        document.getElementById('openPositions').textContent = stats.open_positions || 0;
+                    }
+                    if (data.new_events?.length) loadHistory();
+                } catch (err) { console.error('SSE parse error:', err); }
+            };
+        }
+
+        refreshStatus();
+        loadHistory();
+        setInterval(refreshStatus, 5000);
+        setInterval(loadHistory, 10000);
+    </script>
+</body>
+</html>
+'''
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("🎯 Nifty 50 5-Minute Scalping Research Agent")
@@ -620,6 +1175,7 @@ if __name__ == '__main__':
     print(f"Model: {config.OPENROUTER_MODEL}")
     print(f"API Key: {'Configured ✅' if config.OPENROUTER_API_KEY else 'Not Set ⚠️'}")
     print(f"Server: http://{config.HOST}:{config.PORT}")
+    print(f"Paper Trading: http://{config.HOST}:{config.PORT}/paper")
     print("=" * 60)
     
     app.run(host=config.HOST, port=config.PORT, debug=False, threaded=True)
