@@ -384,6 +384,28 @@ def calculate_scalp_targets(entry_price: float, atr: float, direction: str) -> d
     }
 
 
+def get_candle_pattern_analysis(data: pd.DataFrame) -> dict:
+    """
+    Get comprehensive candlestick pattern analysis.
+    Returns detected patterns with confidence scores and trading suggestions.
+    """
+    try:
+        from candle_patterns import CandlePatternAnalyzer
+        analyzer = CandlePatternAnalyzer(data)
+        return analyzer.get_pattern_summary()
+    except Exception as e:
+        print(f"Error in candle pattern analysis: {e}")
+        return {
+            "total_patterns": 0,
+            "bullish_patterns": 0,
+            "bearish_patterns": 0,
+            "neutral_patterns": 0,
+            "overall_bias": "NEUTRAL",
+            "patterns": [],
+            "error": str(e)
+        }
+
+
 if __name__ == "__main__":
     # Test indicators
     from data_fetcher import NiftyDataFetcher
@@ -403,3 +425,11 @@ if __name__ == "__main__":
         print("\n--- Support/Resistance ---")
         sr = indicators.get_support_resistance()
         print(sr)
+        
+        print("\n--- Candlestick Patterns ---")
+        patterns = get_candle_pattern_analysis(analyzed_data)
+        print(f"Total Patterns: {patterns['total_patterns']}")
+        print(f"Bullish: {patterns['bullish_patterns']}, Bearish: {patterns['bearish_patterns']}")
+        print(f"Overall Bias: {patterns['overall_bias']}")
+        for p in patterns.get('patterns', [])[:5]:
+            print(f"  - {p['type']}: {p['signal']} ({p['confidence']}%)")

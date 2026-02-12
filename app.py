@@ -33,11 +33,12 @@ class NumpyEncoder(json.JSONEncoder):
 
 
 from data_fetcher import NiftyDataFetcher
-from indicators import ScalpingIndicators
+from indicators import ScalpingIndicators, get_candle_pattern_analysis
 from scalping_strategies import StrategyEngine
 from openai_agent import OpenAIScalpingAgent, create_openai_agent
 from realtime_agent import get_realtime_agent, get_paper_engine, RealTimeScalpingAgent
 from paper_trading import PaperTradingEngine
+from candle_patterns import CandlePatternAnalyzer, analyze_nifty_patterns
 
 app = Flask(__name__)
 app.json_encoder = NumpyEncoder
@@ -93,7 +94,7 @@ def convert_numpy(obj):
 
 
 def get_full_analysis():
-    """Get complete market analysis"""
+    """Get complete market analysis with candlestick patterns"""
     # Fetch fresh data
     raw_data = data_fetcher.fetch_data()
     
@@ -116,6 +117,11 @@ def get_full_analysis():
     # Get support/resistance
     sr_levels = indicators.get_support_resistance()
     
+    # === CANDLESTICK PATTERN ANALYSIS ===
+    pattern_analyzer = CandlePatternAnalyzer(analyzed_data)
+    pattern_summary = pattern_analyzer.get_pattern_summary()
+    actionable_patterns = pattern_analyzer.get_actionable_signals(70)  # 70%+ confidence
+    
     result = {
         "market_data": market_data,
         "analysis": current_analysis,
@@ -137,6 +143,20 @@ def get_full_analysis():
         ],
         "market_bias": market_bias,
         "support_resistance": sr_levels,
+        "candle_patterns": pattern_summary,
+        "actionable_patterns": [
+            {
+                "type": p.pattern_type.value,
+                "signal": p.signal.value,
+                "confidence": p.confidence,
+                "description": p.description,
+                "entry": p.entry_suggestion,
+                "stop_loss": p.stop_loss_suggestion,
+                "target": p.target_suggestion,
+                "validation": p.validation_factors
+            }
+            for p in actionable_patterns[:10]
+        ],
         "raw_data": analyzed_data.tail(20).to_dict(orient="records")
     }
     
@@ -625,6 +645,96 @@ def health():
         "openrouter_configured": bool(config.OPENROUTER_API_KEY),
         "model": config.OPENROUTER_MODEL
     })
+
+
+# ============================================================
+# CANDLESTICK PATTERN ANALYSIS ENDPOINTS
+# ============================================================
+
+@app.route('/api/patterns')
+def api_patterns():
+    """Get comprehensive candlestick pattern analysis"""
+    try:
+        raw_data = data_fetcher.fetch_data()
+        
+        if raw_data.empty:
+            return jsonify({"error": "Failed to fetch market data"}), 500
+        
+        indicators = ScalpingIndicators(raw_data)
+        analyzed_data = indicators.calculate_all()
+        
+        pattern_analyzer = CandlePatternAnalyzer(analyzed_data)
+        summary = pattern_analyzer.get_pattern_summary()
+        actionable = pattern_analyzer.get_actionable_signals(70)
+        
+        result = {
+            "summary": summary,
+            "actionable_patterns": [
+                {
+                    "type": p.pattern_type.value,
+                    "signal": p.signal.value,
+                    "confidence": p.confidence,
+                    "candles_used": p.candles_used,
+                    "timestamp": p.timestamp,
+                    "description": p.description,
+                    "entry": p.entry_suggestion,
+                    "stop_loss": p.stop_loss_suggestion,
+                    "target": p.target_suggestion,
+                    "validation": p.validation_factors
+                }
+                for p in actionable
+            ],
+            "current_price": float(analyzed_data.iloc[-1]['close']),
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        return jsonify(convert_numpy(result))
+        
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/patterns/high-accuracy')
+def api_patterns_high_accuracy():
+    """Get only high-accuracy patterns (85%+ confidence)"""
+    try:
+        raw_data = data_fetcher.fetch_data()
+        
+        if raw_data.empty:
+            return jsonify({"error": "Failed to fetch market data"}), 500
+        
+        indicators = ScalpingIndicators(raw_data)
+        analyzed_data = indicators.calculate_all()
+        
+        pattern_analyzer = CandlePatternAnalyzer(analyzed_data)
+        high_accuracy_patterns = pattern_analyzer.get_actionable_signals(85)  # 85%+ only
+        
+        result = {
+            "high_accuracy_patterns": [
+                {
+                    "type": p.pattern_type.value,
+                    "signal": p.signal.value,
+                    "confidence": p.confidence,
+                    "description": p.description,
+                    "entry": p.entry_suggestion,
+                    "stop_loss": p.stop_loss_suggestion,
+                    "target": p.target_suggestion,
+                    "validation": p.validation_factors,
+                    "action": "TAKE TRADE" if p.confidence >= 90 else "CONSIDER TRADE"
+                }
+                for p in high_accuracy_patterns
+            ],
+            "total_high_accuracy": len(high_accuracy_patterns),
+            "recommendation": "TRADE" if any(p.confidence >= 90 for p in high_accuracy_patterns) else "WAIT",
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        return jsonify(convert_numpy(result))
+        
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
 
 
 # ============================================================

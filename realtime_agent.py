@@ -18,9 +18,10 @@ from enum import Enum
 import traceback
 
 from data_fetcher import NiftyDataFetcher
-from indicators import ScalpingIndicators
+from indicators import ScalpingIndicators, get_candle_pattern_analysis
 from scalping_strategies import StrategyEngine, TradeSetup
 from paper_trading import PaperTradingEngine, Position
+from candle_patterns import CandlePatternAnalyzer, PatternSignal
 import config
 
 
@@ -82,6 +83,11 @@ class RealTimeScalpingAgent:
         self.last_analysis: Optional[Dict] = None
         self.last_setups: List[TradeSetup] = []
         self.pending_signals: List[TradeSetup] = []
+        
+        # Candle pattern analysis
+        self.last_patterns: Optional[Dict] = None
+        self.pattern_confirmation_required = True  # Require pattern confirmation for trades
+        self.min_pattern_confidence = 75  # Minimum confidence for pattern signals
         
         # Trade events log
         self.events: List[TradeEvent] = []
@@ -246,7 +252,7 @@ class RealTimeScalpingAgent:
                         print(f"📈 Trailing stop updated: {old_stop:.2f} → {new_stop:.2f}")
     
     def _analyze_market(self) -> Optional[Dict]:
-        """Fetch data and analyze market"""
+        """Fetch data and analyze market with candlestick pattern detection"""
         try:
             # Fetch fresh data
             raw_data = self.data_fetcher.fetch_data()
@@ -270,14 +276,43 @@ class RealTimeScalpingAgent:
             setups = strategy_engine.run_all_strategies()
             market_bias = strategy_engine.get_market_bias()
             
-            self.last_setups = setups
+            # === CANDLESTICK PATTERN ANALYSIS ===
+            pattern_analyzer = CandlePatternAnalyzer(analyzed_data)
+            pattern_summary = pattern_analyzer.get_pattern_summary()
+            self.last_patterns = pattern_summary
+            
+            # Get high-confidence actionable patterns
+            actionable_patterns = pattern_analyzer.get_actionable_signals(self.min_pattern_confidence)
+            
+            # Enhance setups with pattern confirmation
+            enhanced_setups = self._enhance_setups_with_patterns(setups, actionable_patterns, pattern_summary)
+            
+            self.last_setups = enhanced_setups
             self.last_analysis = {
                 'market_data': market_data,
                 'analysis': current_analysis,
-                'setups': setups,
+                'setups': enhanced_setups,
                 'market_bias': market_bias,
+                'candle_patterns': pattern_summary,
+                'actionable_patterns': [
+                    {
+                        'type': p.pattern_type.value,
+                        'signal': p.signal.value,
+                        'confidence': p.confidence,
+                        'description': p.description,
+                        'entry': p.entry_suggestion,
+                        'stop_loss': p.stop_loss_suggestion,
+                        'target': p.target_suggestion
+                    }
+                    for p in actionable_patterns[:5]
+                ],
                 'timestamp': datetime.now().isoformat()
             }
+            
+            # Log high-confidence patterns
+            if actionable_patterns:
+                best_pattern = actionable_patterns[0]
+                print(f"📊 Pattern: {best_pattern.pattern_type.value} ({best_pattern.signal.value}) - {best_pattern.confidence}% confidence")
             
             return self.last_analysis
             
@@ -287,6 +322,64 @@ class RealTimeScalpingAgent:
             if self.on_error:
                 self.on_error(str(e))
             return None
+    
+    def _enhance_setups_with_patterns(self, setups: List[TradeSetup], 
+                                       patterns: list, 
+                                       pattern_summary: Dict) -> List[TradeSetup]:
+        """
+        Enhance trade setups with candlestick pattern confirmation.
+        Boosts confidence when patterns align with technical signals.
+        """
+        if not patterns:
+            return setups
+        
+        enhanced_setups = []
+        pattern_bias = pattern_summary.get('overall_bias', 'NEUTRAL')
+        
+        for setup in setups:
+            # Check if any pattern confirms the setup direction
+            confirming_patterns = []
+            
+            for pattern in patterns:
+                pattern_signal = pattern.signal
+                
+                # Check alignment
+                if setup.direction == "LONG" and pattern_signal in [PatternSignal.STRONG_BULLISH, PatternSignal.BULLISH]:
+                    confirming_patterns.append(pattern)
+                elif setup.direction == "SHORT" and pattern_signal in [PatternSignal.STRONG_BEARISH, PatternSignal.BEARISH]:
+                    confirming_patterns.append(pattern)
+            
+            # Boost confidence if patterns confirm
+            if confirming_patterns:
+                best_confirming = max(confirming_patterns, key=lambda p: p.confidence)
+                
+                # Calculate confidence boost
+                pattern_boost = min(15, best_confirming.confidence * 0.15)
+                new_confidence = min(98, setup.confidence + pattern_boost)
+                
+                # Update setup with enhanced confidence
+                setup.confidence = new_confidence
+                setup.reasoning += f" | Pattern confirmation: {best_confirming.pattern_type.value} ({best_confirming.confidence}%)"
+                setup.indicators['pattern_confirmed'] = True
+                setup.indicators['confirming_pattern'] = best_confirming.pattern_type.value
+                setup.indicators['pattern_confidence'] = best_confirming.confidence
+            else:
+                setup.indicators['pattern_confirmed'] = False
+            
+            # Also check if pattern bias aligns
+            if (setup.direction == "LONG" and pattern_bias == "BULLISH") or \
+               (setup.direction == "SHORT" and pattern_bias == "BEARISH"):
+                setup.confidence = min(98, setup.confidence + 5)
+                setup.indicators['bias_aligned'] = True
+            else:
+                setup.indicators['bias_aligned'] = False
+            
+            enhanced_setups.append(setup)
+        
+        # Re-sort by enhanced confidence
+        enhanced_setups.sort(key=lambda x: x.confidence, reverse=True)
+        
+        return enhanced_setups
     
     def _evaluate_signals(self, setups: List[TradeSetup]):
         """Evaluate trade signals and execute if valid"""
