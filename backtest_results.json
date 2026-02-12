@@ -1,0 +1,65 @@
+{
+  "summary": {
+    "total_trades": 162,
+    "wins": 71,
+    "losses": 91,
+    "breakeven": 0,
+    "win_rate": 43.83,
+    "accuracy": "43.8%"
+  },
+  "pnl": {
+    "total_pnl_points": 2.9,
+    "gross_profit": 2827.33,
+    "gross_loss": 2824.44,
+    "net_pnl_inr": -56053.37,
+    "return_pct": -5.61
+  },
+  "ratios": {
+    "profit_factor": 1.0,
+    "avg_win": 39.82,
+    "avg_loss": 31.04,
+    "avg_trade": 0.02,
+    "risk_reward_achieved": 1.28,
+    "expectancy": 0.02,
+    "sharpe_ratio": -4.47
+  },
+  "risk": {
+    "max_drawdown_pct": 11.08,
+    "final_capital": 943946.63,
+    "initial_capital": 1000000
+  },
+  "by_strategy": {
+    "rsi_reversal": {
+      "trades": 27,
+      "wins": 14,
+      "win_rate": 51.85185185185185,
+      "total_pnl": 244.80659865537018
+    },
+    "bb_squeeze": {
+      "trades": 99,
+      "wins": 44,
+      "win_rate": 44.44444444444444,
+      "total_pnl": -26.724468317363062
+    },
+    "ema_crossover": {
+      "trades": 36,
+      "wins": 13,
+      "win_rate": 36.11111111111111,
+      "total_pnl": -215.1866294395877
+    }
+  },
+  "by_exit_reason": {
+    "STOP_LOSS": {
+      "count": 71,
+      "pct": 43.82716049382716
+    },
+    "TIME_EXIT": {
+      "count": 63,
+      "pct": 38.88888888888889
+    },
+    "TARGET": {
+      "count": 28,
+      "pct": 17.28395061728395
+    }
+  }
+}
